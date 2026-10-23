@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const API_URL = 'http://localhost:5000/api';
+const API_URL = 'https://finance-6w4c.onrender.com';
 
 export default function App() {
   const [user, setUser] = useState(() => JSON.parse(localStorage.getItem('financeUser')) || null);
