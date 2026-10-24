@@ -1,4 +1,3 @@
-// src/App.jsx
 import React, { useState, useEffect } from 'react';
 import { 
   LogOut, Plus, Trash2, Edit2, History, X, Save, 
@@ -6,7 +5,7 @@ import {
 } from 'lucide-react';
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-const API_URL = 'https://finance-6w4c.onrender.com';
+const API_URL = 'https://finance-6w4c.onrender.com/api';
 
 export default function App() {
   const [user, setUser] = useState(() => JSON.parse(localStorage.getItem('financeUser')) || null);

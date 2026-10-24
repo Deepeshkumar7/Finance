@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">karuppanan-finance</string>
+    <string name="title_activity_main">karuppanan-finance</string>
+    <string name="package_name">com.karuppanan.finance</string>
+    <string name="custom_url_scheme">com.karuppanan.finance</string>
+</resources>
