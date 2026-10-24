@@ -307,7 +307,9 @@ function ClientCard({ client, refresh }) {
   const [showHistory, setShowHistory] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
-  const remaining = client.principal - (client.totalPaid || 0);
+  const interestAmount = client.principal * (client.interest || 0) / 100;
+  const totalLoanAmount = client.principal + interestAmount;
+  const remaining = totalLoanAmount - (client.totalPaid || 0);
 
   const handleUpdate = async () => {
     await fetch(`${API_URL}/clients/${client._id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editData) });
@@ -362,7 +364,7 @@ function ClientCard({ client, refresh }) {
           </div>
           <p className="text-sm text-gray-500 mb-4 font-medium">{client.phone || 'No Phone'}</p>
           <div className="flex flex-wrap gap-3 text-sm">
-            <div className="bg-gray-50 px-4 py-2 rounded-lg border border-gray-100 flex flex-col"><span className="text-xs text-gray-400 font-bold uppercase mb-0.5">Loan</span><span className="font-bold text-slate-700">₹{client.principal}</span></div>
+            <div className="bg-gray-50 px-4 py-2 rounded-lg border border-gray-100 flex flex-col"><span className="text-xs text-gray-400 font-bold uppercase mb-0.5">Total Loan</span><span className="font-bold text-slate-700">₹{totalLoanAmount}</span></div>
             <div className="bg-emerald-50 px-4 py-2 rounded-lg border border-emerald-100 flex flex-col"><span className="text-xs text-emerald-600/70 font-bold uppercase mb-0.5">Paid</span><span className="font-bold text-emerald-700">₹{client.totalPaid || 0}</span></div>
             <div className="bg-red-50 px-4 py-2 rounded-lg border border-red-100 flex flex-col"><span className="text-xs text-red-600/70 font-bold uppercase mb-0.5">Due</span><span className="font-bold text-red-700">₹{remaining}</span></div>
           </div>
