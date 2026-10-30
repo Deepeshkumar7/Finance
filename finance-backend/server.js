@@ -39,11 +39,12 @@ const Client = mongoose.model('Client', ClientSchema);
 // --- NodeMailer Email OTP System Setup ---
 const otpStore = {}; // Temporary memory store for OTPs
 
-// Configure NodeMailer with your Gmail (Using Secure SMTP)
+// Configure NodeMailer with your Gmail (Using Port 587 STARTTLS)
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
-  port: 465,
-  secure: true, 
+  port: 587,
+  secure: false, // Must be false for port 587. It automatically upgrades to TLS.
+  requireTLS: true,
   auth: {
     user: 'deepeshkumart7@gmail.com', 
     pass: 'ydoecucvbgxcwyqy' 
