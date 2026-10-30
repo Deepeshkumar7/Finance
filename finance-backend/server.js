@@ -97,12 +97,14 @@ app.delete('/api/clients/:id', async (req, res) => {
 // Temporary memory store for OTPs (resets if server restarts)
 const otpStore = {};
 
-// Configure NodeMailer with your Gmail
+// Configure NodeMailer with your Gmail (Using Secure SMTP)
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true, 
   auth: {
     user: 'deepeshkumart7@gmail.com', 
-    pass: 'ydoecucvbgxcwyqy'   
+    pass: 'ydoecucvbgxcwyqy' 
   }
 });
 
