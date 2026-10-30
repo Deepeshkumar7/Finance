@@ -4,8 +4,6 @@ import {
   CalendarDays, ArrowRight, Wallet, ShieldCheck,
   Search, MapPin, Phone, Users, TrendingUp, ChevronDown, Mail, WifiOff
 } from 'lucide-react';
-import { auth, googleProvider } from './firebase';
-import { signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
 import { db } from './db';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useTranslation } from 'react-i18next';
@@ -20,9 +18,15 @@ export default function App() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
   
   // Auth States
-  const [email, setEmail] = useState('');
+  const [isLoginMode, setIsLoginMode] = useState(true);
+  const [identifier, setIdentifier] = useState(''); 
+  const [email, setEmail] = useState(''); 
+  const [phone, setPhone] = useState(''); 
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [otp, setOtp] = useState('');
   const [showOtpInput, setShowOtpInput] = useState(false);
+  const [isSending, setIsSending] = useState(false);
   const [authError, setAuthError] = useState('');
   const [authSuccess, setAuthSuccess] = useState('');
 
@@ -33,7 +37,7 @@ export default function App() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [newClient, setNewClient] = useState({ name: '', phone: '', village: '', principal: '', interest: '' });
 
-  // 1. Offline Database Read (Live Update)
+  // 1. Offline Database Read
   const clients = useLiveQuery(
     () => db.clients.where('day').equals(selectedDay).toArray(),
     [selectedDay]
@@ -51,21 +55,13 @@ export default function App() {
     };
   }, []);
 
-  // Listen for Auth changes (Firebase & LocalStorage)
+  // Listen for Auth changes (LocalStorage only - NO FIREBASE)
   useEffect(() => {
     const savedUser = localStorage.getItem('financeUser');
     if (savedUser) {
       setUser(JSON.parse(savedUser));
-      setLoading(false);
-    } else {
-      const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-        if (currentUser) {
-          setUser({ uid: currentUser.uid, email: currentUser.email });
-        }
-        setLoading(false);
-      });
-      return () => unsubscribe();
     }
+    setLoading(false);
   }, []);
 
   // Background Sync Engine
@@ -106,62 +102,79 @@ export default function App() {
     return () => clearInterval(interval);
   }, [user, isOnline, selectedDay]);
 
-  // --- AUTHENTICATION METHODS ---
-  const handleGoogleLogin = async () => {
-    setAuthError('');
-    try {
-      await signInWithPopup(auth, googleProvider);
-    } catch (error) {
-      setAuthError(error.message);
-    }
-  };
-
-  const handleSendOtp = async (e) => {
+  // --- CUSTOM AUTHENTICATION METHODS ---
+  const handleLogin = async (e) => {
     e.preventDefault();
     setAuthError('');
-    setAuthSuccess('');
-    
+    setIsSending(true);
     try {
-      const res = await fetch(`${API_URL}/auth/send-otp`, {
+      const res = await fetch(`${API_URL}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email }) 
+        body: JSON.stringify({ identifier, password })
       });
-      
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      
-      setShowOtpInput(true);
-      setAuthSuccess('OTP sent successfully to ' + email);
-    } catch (error) {
-      setAuthError(error.message || 'Failed to connect to server');
-    }
-  };
-
-  const handleVerifyOtp = async (e) => {
-    e.preventDefault();
-    setAuthError('');
-    
-    try {
-      const res = await fetch(`${API_URL}/auth/verify-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email, otp: otp })
-      });
-      
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       
       setUser(data);
       localStorage.setItem('financeUser', JSON.stringify(data));
       setCurrentTab('dashboard');
-    } catch (error) {
-      setAuthError('Invalid OTP. Please try again.');
+    } catch (err) {
+      setAuthError(err.message);
+    } finally {
+      setIsSending(false);
     }
   };
 
-  const handleLogout = async () => {
-    await signOut(auth);
+  const handleSignupSendOtp = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    if (password !== confirmPassword) return setAuthError('Passwords do not match');
+    if (password.length < 6) return setAuthError('Password must be at least 6 characters');
+    
+    setIsSending(true);
+    try {
+      const res = await fetch(`${API_URL}/auth/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }) 
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      
+      setShowOtpInput(true);
+      setAuthSuccess('Verification OTP sent to ' + email);
+    } catch (err) {
+      setAuthError(err.message);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleSignupVerify = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    setIsSending(true);
+    try {
+      const res = await fetch(`${API_URL}/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, phone, password, otp })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      
+      setUser(data);
+      localStorage.setItem('financeUser', JSON.stringify(data));
+      setCurrentTab('dashboard');
+    } catch (err) {
+      setAuthError(err.message);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const handleLogout = () => {
     localStorage.removeItem('financeUser');
     setUser(null);
     setCurrentTab('dashboard');
@@ -209,11 +222,11 @@ export default function App() {
     return <div className="min-h-screen flex items-center justify-center bg-slate-50 font-bold text-emerald-600">Loading App...</div>;
   }
 
-  // --- LOGIN SCREEN ---
+  // --- LOGIN SCREEN (NO FIREBASE) ---
   if (!user) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#f4f7f9] p-4 font-sans selection:bg-emerald-500 selection:text-white">
-        <div className="max-w-5xl w-full bg-white rounded-3xl shadow-[0_20px_50px_rgb(0,0,0,0.06)] flex overflow-hidden border border-gray-100 min-h-[600px]">
+        <div className="max-w-5xl w-full bg-white rounded-3xl shadow-[0_20px_50px_rgb(0,0,0,0.06)] flex overflow-hidden border border-gray-100 min-h-[600px] flex-col md:flex-row">
           
           <div className="hidden md:flex md:w-5/12 bg-slate-900 p-12 flex-col justify-between relative overflow-hidden">
             <div className="absolute top-0 right-0 -mr-16 -mt-16 w-72 h-72 rounded-full bg-emerald-500/20 blur-3xl pointer-events-none"></div>
@@ -231,12 +244,12 @@ export default function App() {
                 Master your <br/><span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-300">collections.</span>
               </h2>
               <p className="text-slate-400 text-lg leading-relaxed max-w-sm">
-                Secure access via Google or Email OTP. Designed for offline-first reliability.
+                Secure access via Email or Phone. Designed for offline-first reliability.
               </p>
             </div>
           </div>
 
-          <div className="w-full md:w-7/12 p-8 md:p-14 lg:p-20 flex flex-col justify-center relative">
+          <div className="w-full md:w-7/12 p-8 md:p-14 lg:p-20 flex flex-col justify-center overflow-y-auto max-h-[90vh] md:max-h-full">
             <div className="md:hidden flex items-center gap-3 mb-10">
               <div className="bg-gradient-to-br from-emerald-400 to-emerald-600 p-2 rounded-lg shadow-sm">
                 <Wallet className="text-white" size={20} />
@@ -247,48 +260,78 @@ export default function App() {
             </div>
 
             <div className="mb-8">
-              <h3 className="text-3xl font-extrabold text-slate-900 tracking-tight">Welcome back</h3>
-              <p className="text-slate-500 mt-2 text-sm md:text-base font-medium">Select a secure method to log in.</p>
+              <h3 className="text-3xl font-extrabold text-slate-900 tracking-tight">{isLoginMode ? 'Welcome back' : 'Create an account'}</h3>
+              <p className="text-slate-500 mt-2 text-sm md:text-base font-medium">
+                {isLoginMode ? "Enter your details to access your dashboard." : "Sign up to start managing your routes."}
+              </p>
             </div>
 
-            <button onClick={handleGoogleLogin} className="w-full flex items-center justify-center gap-3 bg-white border-2 border-gray-200 text-slate-800 py-3.5 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm mb-6">
-              <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
-              Continue with Google
-            </button>
-
-            <div className="relative flex py-2 items-center mb-6">
-              <div className="flex-grow border-t border-gray-200"></div>
-              <span className="flex-shrink-0 mx-4 text-gray-400 text-sm font-bold uppercase">Or use Email</span>
-              <div className="flex-grow border-t border-gray-200"></div>
-            </div>
-
-            {!showOtpInput ? (
-              <form onSubmit={handleSendOtp} className="space-y-4">
+            {/* LOGIN FORM */}
+            {isLoginMode ? (
+              <form onSubmit={handleLogin} className="space-y-4 animate-in fade-in">
                 <div>
-                  <label className="block text-sm font-bold text-slate-700 mb-2">Email Address for OTP</label>
-                  <div className="relative">
-                    <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
-                    <input type="email" required value={email} onChange={e => setEmail(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-gray-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500 outline-none transition-all text-slate-900 font-medium" placeholder="admin@example.com" />
-                  </div>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Email or Phone Number</label>
+                  <input type="text" required value={identifier} onChange={e => setIdentifier(e.target.value)} className="w-full p-4 bg-gray-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500 outline-none transition-all text-slate-900 font-medium" placeholder="admin@example.com or +919876543210" />
                 </div>
-                <button type="submit" className="w-full bg-slate-900 text-white py-4 rounded-xl font-bold hover:bg-slate-800 shadow-lg transition-all flex justify-center items-center gap-2">
-                  Send Secure OTP <ArrowRight size={18} />
+                <div>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Password</label>
+                  <input type="password" required value={password} onChange={e => setPassword(e.target.value)} className="w-full p-4 bg-gray-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500 outline-none transition-all text-slate-900 font-medium" placeholder="••••••••" />
+                </div>
+                <button type="submit" disabled={isSending} className="w-full bg-emerald-600 text-white py-4 rounded-xl font-bold hover:bg-emerald-700 shadow-lg shadow-emerald-500/20 mt-4 disabled:opacity-70">
+                  {isSending ? 'Logging in...' : 'Log In'}
                 </button>
               </form>
             ) : (
-              <form onSubmit={handleVerifyOtp} className="space-y-4 animate-in fade-in">
-                <div>
-                  <label className="block text-sm font-bold text-slate-700 mb-2">Enter 6-digit OTP</label>
-                  <input type="text" required value={otp} onChange={e => setOtp(e.target.value)} className="w-full p-4 bg-gray-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500 outline-none transition-all text-slate-900 font-medium text-center tracking-[0.5em] text-lg" placeholder="------" maxLength={6} />
-                </div>
-                <button type="submit" className="w-full bg-emerald-600 text-white py-4 rounded-xl font-bold hover:bg-emerald-700 shadow-lg shadow-emerald-500/20 transition-all flex justify-center items-center gap-2">
-                  Verify & Login <ShieldCheck size={18} />
-                </button>
-                <button type="button" onClick={() => setShowOtpInput(false)} className="w-full text-slate-500 font-bold text-sm mt-4">Change Email Address</button>
-              </form>
+              /* SIGNUP FORM */
+              !showOtpInput ? (
+                <form onSubmit={handleSignupSendOtp} className="space-y-4 animate-in fade-in">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-bold text-slate-700 mb-2">Email Address</label>
+                      <input type="email" required value={email} onChange={e => setEmail(e.target.value)} className="w-full p-3 bg-gray-50 border border-slate-200 rounded-xl outline-none focus:border-emerald-500" placeholder="admin@email.com" />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-bold text-slate-700 mb-2">Phone Number</label>
+                      <input type="tel" required value={phone} onChange={e => setPhone(e.target.value)} className="w-full p-3 bg-gray-50 border border-slate-200 rounded-xl outline-none focus:border-emerald-500" placeholder="+91..." />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 mb-2">Password</label>
+                    <input type="password" required value={password} onChange={e => setPassword(e.target.value)} className="w-full p-3 bg-gray-50 border border-slate-200 rounded-xl outline-none focus:border-emerald-500" placeholder="Min 6 characters" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 mb-2">Confirm Password</label>
+                    <input type="password" required value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="w-full p-3 bg-gray-50 border border-slate-200 rounded-xl outline-none focus:border-emerald-500" placeholder="Re-enter password" />
+                  </div>
+                  <button type="submit" disabled={isSending} className="w-full bg-slate-900 text-white py-4 rounded-xl font-bold mt-4 disabled:opacity-70 hover:bg-slate-800 transition-all">
+                    {isSending ? 'Sending OTP...' : 'Send Verification OTP'}
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={handleSignupVerify} className="space-y-4 animate-in fade-in">
+                  <div>
+                    <label className="block text-sm font-bold text-slate-700 mb-2">Enter 6-digit OTP sent to {email}</label>
+                    <input type="text" required value={otp} onChange={e => setOtp(e.target.value)} className="w-full p-4 bg-gray-50 border border-slate-200 rounded-xl focus:border-emerald-500 outline-none text-center tracking-[0.5em] text-lg font-medium" placeholder="------" maxLength={6} />
+                  </div>
+                  <button type="submit" disabled={isSending} className="w-full bg-emerald-600 text-white py-4 rounded-xl font-bold shadow-lg shadow-emerald-500/20 disabled:opacity-70 hover:bg-emerald-700 transition-all">
+                    {isSending ? 'Verifying...' : 'Verify & Create Account'}
+                  </button>
+                  <button type="button" onClick={() => setShowOtpInput(false)} className="w-full text-slate-500 font-bold text-sm mt-2">Go back and edit details</button>
+                </form>
+              )
             )}
 
-            {authError && <p className="text-red-600 text-sm font-bold bg-red-50 p-4 rounded-xl border border-red-100 flex items-center gap-2 mt-4"><X size={18} className="shrink-0" /> {authError}</p>}
+            {/* TOGGLE MODE */}
+            <div className="mt-8 text-center border-t border-gray-100 pt-6">
+              <p className="text-sm text-slate-600 font-medium">
+                {isLoginMode ? "Don't have an account? " : "Already have an account? "}
+                <button onClick={() => { setIsLoginMode(!isLoginMode); setAuthError(''); setShowOtpInput(false); }} className="text-emerald-600 font-bold hover:underline">
+                  {isLoginMode ? "Sign up" : "Log in"}
+                </button>
+              </p>
+            </div>
+
+            {authError && <p className="text-red-600 text-sm font-bold bg-red-50 p-4 rounded-xl border border-red-100 flex items-center gap-2 mt-4"><X size={18} /> {authError}</p>}
             {authSuccess && <p className="text-emerald-700 text-sm font-bold bg-emerald-50 p-4 rounded-xl border border-emerald-100 flex items-center gap-2 mt-4"><ShieldCheck size={18} /> {authSuccess}</p>}
           </div>
         </div>
@@ -310,7 +353,7 @@ export default function App() {
           <div className="flex items-center gap-2">
             {!isOnline && <WifiOff size={16} className="text-red-400 animate-pulse" />}
             <div className="bg-slate-800 px-3 py-1 rounded-full text-xs font-bold text-slate-300 truncate max-w-[120px]">
-              {user.email?.split('@')[0] || 'Admin'}
+              {user.email?.split('@')[0] || user.phone || 'Admin'}
             </div>
           </div>
         </div>
@@ -416,7 +459,7 @@ export default function App() {
               <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mb-4 text-slate-400">
                 <Users size={32} />
               </div>
-              <h2 className="text-xl font-bold text-slate-800">{user.email}</h2>
+              <h2 className="text-xl font-bold text-slate-800">{user.email || user.phone}</h2>
               <p className="text-sm text-gray-500 font-medium">Administrator</p>
               
               {/* LANGUAGE SWITCHER */}
