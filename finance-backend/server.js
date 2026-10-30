@@ -93,4 +93,52 @@ app.delete('/api/clients/:id', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
+// Temporary memory store for OTPs (resets if server restarts)
+const otpStore = {};
+
+// Configure NodeMailer with your Gmail
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: 'deepeshkumart7@gmail.com', // Replace with your Gmail
+    pass: 'ydoecucvbgxcwyqy'   // Paste the 16-letter App Password here
+  }
+});
+
+// Endpoint 1: Generate and Send OTP
+app.post('/api/auth/send-otp', async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: 'Email is required' });
+
+  // Generate a random 6-digit OTP
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  otpStore[email] = otp; // Save to memory
+  
+  try {
+    await transporter.sendMail({
+      from: 'Karuppanan Finance <your_email@gmail.com>',
+      to: email,
+      subject: 'Your Dashboard Login OTP',
+      html: `<h2>Dashboard Access</h2><p>Your secure login OTP is: <b style="font-size: 24px;">${otp}</b></p><p>This code is valid for 10 minutes.</p>`
+    });
+    res.json({ message: 'OTP sent successfully' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to send email OTP' });
+  }
+});
+
+// Endpoint 2: Verify OTP
+app.post('/api/auth/verify-otp', (req, res) => {
+  const { email, otp } = req.body;
+  
+  if (otpStore[email] && otpStore[email] === otp) {
+    delete otpStore[email]; // Clear OTP after success
+    // Return a user object to save in React's localStorage
+    res.json({ uid: email, email: email, role: 'admin' });
+  } else {
+    res.status(400).json({ error: 'Invalid or expired OTP.' });
+  }
+});
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+const nodemailer = require('nodemailer');
+
