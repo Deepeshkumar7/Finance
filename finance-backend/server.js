@@ -2,6 +2,7 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const nodemailer = require('nodemailer'); // MOVED TO TOP
 require('dotenv').config();
 
 const app = express();
@@ -16,7 +17,7 @@ mongoose.connect(process.env.MONGO_URI)
 // --- Mongoose Models ---
 const UserSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
-  password: { type: String, required: true } // Note: Use bcrypt in production
+  password: { type: String, required: true } 
 });
 const User = mongoose.model('User', UserSchema);
 
@@ -52,17 +53,16 @@ app.post('/api/auth/login', async (req, res) => {
   if (user) res.json({ uid: user._id, email: user.email });
   else res.status(401).json({ error: 'Invalid credentials' });
 });
+
 // Password Reset Route
 app.post('/api/auth/reset-password', async (req, res) => {
   const { email, newPassword } = req.body;
-  
   try {
     const user = await User.findOne({ email });
     if (!user) return res.status(404).json({ error: 'No account found with this email' });
 
     user.password = newPassword;
     await user.save();
-    
     res.json({ success: true, message: 'Password updated successfully!' });
   } catch (err) {
     res.status(500).json({ error: 'Server error during password reset' });
@@ -92,7 +92,8 @@ app.delete('/api/clients/:id', async (req, res) => {
   res.json({ success: true });
 });
 
-const PORT = process.env.PORT || 5000;
+// --- NodeMailer Email OTP System ---
+
 // Temporary memory store for OTPs (resets if server restarts)
 const otpStore = {};
 
@@ -100,8 +101,8 @@ const otpStore = {};
 const transporter = nodemailer.createTransport({
   service: 'gmail',
   auth: {
-    user: 'deepeshkumart7@gmail.com', // Replace with your Gmail
-    pass: 'ydoecucvbgxcwyqy'   // Paste the 16-letter App Password here
+    user: 'deepeshkumart7@gmail.com', 
+    pass: 'ydoecucvbgxcwyqy'   
   }
 });
 
@@ -110,13 +111,12 @@ app.post('/api/auth/send-otp', async (req, res) => {
   const { email } = req.body;
   if (!email) return res.status(400).json({ error: 'Email is required' });
 
-  // Generate a random 6-digit OTP
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
-  otpStore[email] = otp; // Save to memory
+  otpStore[email] = otp; 
   
   try {
     await transporter.sendMail({
-      from: 'Karuppanan Finance <your_email@gmail.com>',
+      from: 'Karuppanan Finance <deepeshkumart7@gmail.com>',
       to: email,
       subject: 'Your Dashboard Login OTP',
       html: `<h2>Dashboard Access</h2><p>Your secure login OTP is: <b style="font-size: 24px;">${otp}</b></p><p>This code is valid for 10 minutes.</p>`
@@ -132,13 +132,12 @@ app.post('/api/auth/verify-otp', (req, res) => {
   const { email, otp } = req.body;
   
   if (otpStore[email] && otpStore[email] === otp) {
-    delete otpStore[email]; // Clear OTP after success
-    // Return a user object to save in React's localStorage
+    delete otpStore[email]; 
     res.json({ uid: email, email: email, role: 'admin' });
   } else {
     res.status(400).json({ error: 'Invalid or expired OTP.' });
   }
 });
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
-const nodemailer = require('nodemailer');
 
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));

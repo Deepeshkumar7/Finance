@@ -1,27 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  LogOut, Plus, Trash2, Edit2, History, X, Save, 
-  CalendarDays, Home, ArrowRight, Wallet, ShieldCheck,
-  Search, MapPin, Phone, Users, TrendingUp, ChevronDown, Smartphone
+  LogOut, Plus, Trash2, Edit2, X, 
+  CalendarDays, ArrowRight, Wallet, ShieldCheck,
+  Search, MapPin, Phone, Users, TrendingUp, ChevronDown, Mail, WifiOff
 } from 'lucide-react';
 import { auth, googleProvider } from './firebase';
-import { 
-  signInWithPopup, 
-  RecaptchaVerifier, 
-  signInWithPhoneNumber, 
-  onAuthStateChanged, 
-  signOut 
-} from 'firebase/auth';
+import { signInWithPopup, onAuthStateChanged, signOut } from 'firebase/auth';
+import { db } from './db';
+import { useLiveQuery } from 'dexie-react-hooks';
+import { useTranslation } from 'react-i18next';
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const API_URL = 'https://finance-6w4c.onrender.com/api';
 
 export default function App() {
+  const { t, i18n } = useTranslation();
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
   
   // Auth States
-  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
   const [otp, setOtp] = useState('');
   const [showOtpInput, setShowOtpInput] = useState(false);
   const [authError, setAuthError] = useState('');
@@ -30,36 +29,84 @@ export default function App() {
   // Dashboard States
   const [currentTab, setCurrentTab] = useState('dashboard');
   const [selectedDay, setSelectedDay] = useState('Sunday');
-  const [clients, setClients] = useState([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [showAddForm, setShowAddForm] = useState(false);
   const [newClient, setNewClient] = useState({ name: '', phone: '', village: '', principal: '', interest: '' });
 
-  // Listen for Firebase Auth changes
+  // 1. Offline Database Read (Live Update)
+  const clients = useLiveQuery(
+    () => db.clients.where('day').equals(selectedDay).toArray(),
+    [selectedDay]
+  ) || [];
+
+  // Listen for Internet Connection
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-      setLoading(false);
-    });
-    return () => unsubscribe();
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
   }, []);
 
-  const fetchClients = async () => {
-    if (!user) return;
-    try {
-      const res = await fetch(`${API_URL}/clients?userId=${user.uid}&day=${selectedDay}`);
-      const data = await res.json();
-      setClients(data);
-    } catch (err) {
-      console.error(err);
-    }
-  };
-
+  // Listen for Auth changes (Firebase & LocalStorage)
   useEffect(() => {
-    if (user) fetchClients();
-  }, [user, selectedDay, currentTab]);
+    const savedUser = localStorage.getItem('financeUser');
+    if (savedUser) {
+      setUser(JSON.parse(savedUser));
+      setLoading(false);
+    } else {
+      const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+        if (currentUser) {
+          setUser({ uid: currentUser.uid, email: currentUser.email });
+        }
+        setLoading(false);
+      });
+      return () => unsubscribe();
+    }
+  }, []);
 
-  // --- FIREBASE AUTHENTICATION METHODS ---
+  // Background Sync Engine
+  useEffect(() => {
+    const syncData = async () => {
+      if (!isOnline || !user) return;
+      try {
+        const pendingClients = await db.clients.where({ isPendingSync: 1 }).toArray();
+        
+        for (const client of pendingClients) {
+          const clientData = { ...client };
+          delete clientData.isPendingSync; 
+          
+          if (client.id.includes('-')) {
+            await fetch(`${API_URL}/clients`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(clientData) });
+          } else {
+            await fetch(`${API_URL}/clients/${client.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(clientData) });
+          }
+          await db.clients.update(client.id, { isPendingSync: 0 });
+        }
+
+        const res = await fetch(`${API_URL}/clients?userId=${user.uid || user.email}&day=${selectedDay}`);
+        if (res.ok) {
+          const serverClients = await res.json();
+          for (const sc of serverClients) {
+            sc.isPendingSync = 0;
+            sc.id = sc._id; 
+            await db.clients.put(sc);
+          }
+        }
+      } catch (err) {
+        console.error("Sync failed:", err);
+      }
+    };
+
+    syncData();
+    const interval = setInterval(syncData, 15000); 
+    return () => clearInterval(interval);
+  }, [user, isOnline, selectedDay]);
+
+  // --- AUTHENTICATION METHODS ---
   const handleGoogleLogin = async () => {
     setAuthError('');
     try {
@@ -69,44 +116,45 @@ export default function App() {
     }
   };
 
-  const setupRecaptcha = () => {
-    if (!window.recaptchaVerifier) {
-      window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
-        size: 'invisible'
-      });
-    }
-  };
-
   const handleSendOtp = async (e) => {
     e.preventDefault();
     setAuthError('');
     setAuthSuccess('');
-    if (!phone.startsWith('+')) {
-      return setAuthError('Phone number must include country code (e.g., +91)');
-    }
     
     try {
-      setupRecaptcha();
-      const appVerifier = window.recaptchaVerifier;
-      const confirmationResult = await signInWithPhoneNumber(auth, phone, appVerifier);
-      window.confirmationResult = confirmationResult;
+      const res = await fetch(`${API_URL}/auth/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email }) 
+      });
+      
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      
       setShowOtpInput(true);
-      setAuthSuccess('OTP sent successfully to ' + phone);
+      setAuthSuccess('OTP sent successfully to ' + email);
     } catch (error) {
-      setAuthError(error.message);
-      if (window.recaptchaVerifier) {
-        window.recaptchaVerifier.clear();
-        window.recaptchaVerifier = null;
-      }
+      setAuthError(error.message || 'Failed to connect to server');
     }
   };
 
   const handleVerifyOtp = async (e) => {
     e.preventDefault();
     setAuthError('');
+    
     try {
-      await window.confirmationResult.confirm(otp);
-      // Firebase onAuthStateChanged will automatically update the user
+      const res = await fetch(`${API_URL}/auth/verify-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email, otp: otp })
+      });
+      
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      
+      setUser(data);
+      localStorage.setItem('financeUser', JSON.stringify(data));
+      setCurrentTab('dashboard');
     } catch (error) {
       setAuthError('Invalid OTP. Please try again.');
     }
@@ -114,16 +162,19 @@ export default function App() {
 
   const handleLogout = async () => {
     await signOut(auth);
+    localStorage.removeItem('financeUser');
+    setUser(null);
     setCurrentTab('dashboard');
   };
 
-  // --- DASHBOARD METHODS ---
+  // --- DASHBOARD METHODS (OFFLINE FIRST) ---
   const handleAddClient = async (e) => {
     e.preventDefault();
     if (!newClient.name || !newClient.principal) return;
     
     const clientData = {
-      userId: user.uid,
+      id: crypto.randomUUID(), 
+      userId: user.uid || user.email,
       day: selectedDay,
       name: newClient.name,
       phone: newClient.phone,
@@ -131,18 +182,13 @@ export default function App() {
       principal: Number(newClient.principal),
       interest: Number(newClient.interest || 0),
       totalPaid: 0,
-      paymentHistory: []
+      paymentHistory: [],
+      isPendingSync: 1
     };
 
-    await fetch(`${API_URL}/clients`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(clientData)
-    });
-    
+    await db.clients.add(clientData); 
     setNewClient({ name: '', phone: '', village: '', principal: '', interest: '' });
     setShowAddForm(false);
-    fetchClients();
   };
 
   const routeStats = clients.reduce((acc, client) => {
@@ -163,7 +209,7 @@ export default function App() {
     return <div className="min-h-screen flex items-center justify-center bg-slate-50 font-bold text-emerald-600">Loading App...</div>;
   }
 
-  // --- NEW FIREBASE LOGIN SCREEN ---
+  // --- LOGIN SCREEN ---
   if (!user) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#f4f7f9] p-4 font-sans selection:bg-emerald-500 selection:text-white">
@@ -185,7 +231,7 @@ export default function App() {
                 Master your <br/><span className="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-300">collections.</span>
               </h2>
               <p className="text-slate-400 text-lg leading-relaxed max-w-sm">
-                Secure access via Google or mobile OTP. Designed for offline-first reliability.
+                Secure access via Google or Email OTP. Designed for offline-first reliability.
               </p>
             </div>
           </div>
@@ -205,7 +251,6 @@ export default function App() {
               <p className="text-slate-500 mt-2 text-sm md:text-base font-medium">Select a secure method to log in.</p>
             </div>
 
-            {/* Google Login Button */}
             <button onClick={handleGoogleLogin} className="w-full flex items-center justify-center gap-3 bg-white border-2 border-gray-200 text-slate-800 py-3.5 rounded-xl font-bold hover:bg-gray-50 transition-all shadow-sm mb-6">
               <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google" className="w-5 h-5" />
               Continue with Google
@@ -213,21 +258,20 @@ export default function App() {
 
             <div className="relative flex py-2 items-center mb-6">
               <div className="flex-grow border-t border-gray-200"></div>
-              <span className="flex-shrink-0 mx-4 text-gray-400 text-sm font-bold uppercase">Or use Phone</span>
+              <span className="flex-shrink-0 mx-4 text-gray-400 text-sm font-bold uppercase">Or use Email</span>
               <div className="flex-grow border-t border-gray-200"></div>
             </div>
 
-            {/* Phone OTP Flow */}
             {!showOtpInput ? (
               <form onSubmit={handleSendOtp} className="space-y-4">
                 <div>
-                  <label className="block text-sm font-bold text-slate-700 mb-2">Mobile Number (with +91)</label>
+                  <label className="block text-sm font-bold text-slate-700 mb-2">Email Address for OTP</label>
                   <div className="relative">
-                    <Smartphone className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
-                    <input type="tel" required value={phone} onChange={e => setPhone(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-gray-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500 outline-none transition-all text-slate-900 font-medium" placeholder="+91 9876543210" />
+                    <Mail className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={20} />
+                    <input type="email" required value={email} onChange={e => setEmail(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-gray-50 border border-slate-200 rounded-xl focus:bg-white focus:ring-4 focus:ring-emerald-500/10 focus:border-emerald-500 outline-none transition-all text-slate-900 font-medium" placeholder="admin@example.com" />
                   </div>
                 </div>
-                <button type="submit" id="sign-in-button" className="w-full bg-slate-900 text-white py-4 rounded-xl font-bold hover:bg-slate-800 shadow-lg transition-all flex justify-center items-center gap-2">
+                <button type="submit" className="w-full bg-slate-900 text-white py-4 rounded-xl font-bold hover:bg-slate-800 shadow-lg transition-all flex justify-center items-center gap-2">
                   Send Secure OTP <ArrowRight size={18} />
                 </button>
               </form>
@@ -240,14 +284,12 @@ export default function App() {
                 <button type="submit" className="w-full bg-emerald-600 text-white py-4 rounded-xl font-bold hover:bg-emerald-700 shadow-lg shadow-emerald-500/20 transition-all flex justify-center items-center gap-2">
                   Verify & Login <ShieldCheck size={18} />
                 </button>
-                <button type="button" onClick={() => setShowOtpInput(false)} className="w-full text-slate-500 font-bold text-sm mt-4">Change Phone Number</button>
+                <button type="button" onClick={() => setShowOtpInput(false)} className="w-full text-slate-500 font-bold text-sm mt-4">Change Email Address</button>
               </form>
             )}
 
             {authError && <p className="text-red-600 text-sm font-bold bg-red-50 p-4 rounded-xl border border-red-100 flex items-center gap-2 mt-4"><X size={18} className="shrink-0" /> {authError}</p>}
             {authSuccess && <p className="text-emerald-700 text-sm font-bold bg-emerald-50 p-4 rounded-xl border border-emerald-100 flex items-center gap-2 mt-4"><ShieldCheck size={18} /> {authSuccess}</p>}
-            
-            <div id="recaptcha-container"></div>
           </div>
         </div>
       </div>
@@ -265,8 +307,11 @@ export default function App() {
             <Wallet className="text-emerald-400" size={22} />
             <h1 className="text-lg font-extrabold tracking-tight">Karuppanan <span className="text-emerald-400">Finance</span></h1>
           </div>
-          <div className="bg-slate-800 px-3 py-1 rounded-full text-xs font-bold text-slate-300">
-            {user.phoneNumber || user.email?.split('@')[0] || 'User'}
+          <div className="flex items-center gap-2">
+            {!isOnline && <WifiOff size={16} className="text-red-400 animate-pulse" />}
+            <div className="bg-slate-800 px-3 py-1 rounded-full text-xs font-bold text-slate-300 truncate max-w-[120px]">
+              {user.email?.split('@')[0] || 'Admin'}
+            </div>
           </div>
         </div>
         
@@ -294,20 +339,25 @@ export default function App() {
         {/* DASHBOARD TAB */}
         {currentTab === 'dashboard' && (
           <div className="p-4 space-y-4 animate-in fade-in duration-300">
+            {!isOnline && (
+              <div className="bg-orange-50 border border-orange-200 text-orange-800 text-xs font-bold p-3 rounded-xl flex items-center gap-2">
+                <WifiOff size={16} /> You are offline. Changes will save locally and sync later.
+              </div>
+            )}
             <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100">
               <h2 className="text-sm font-bold text-gray-400 uppercase mb-4 tracking-wider">{selectedDay} Route Summary</h2>
               <div className="grid grid-cols-2 gap-4">
                 <div className="bg-emerald-50 p-4 rounded-xl border border-emerald-100">
-                  <p className="text-xs font-bold text-emerald-600 mb-1">Total Collected</p>
+                  <p className="text-xs font-bold text-emerald-600 mb-1">{t('total_collected')}</p>
                   <p className="text-2xl font-black text-emerald-800">₹{routeStats.collected}</p>
                 </div>
                 <div className="bg-red-50 p-4 rounded-xl border border-red-100">
-                  <p className="text-xs font-bold text-red-600 mb-1">Total Pending</p>
+                  <p className="text-xs font-bold text-red-600 mb-1">{t('total_pending')}</p>
                   <p className="text-2xl font-black text-red-800">₹{routeStats.pending}</p>
                 </div>
                 <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 col-span-2 flex justify-between items-center">
                   <div>
-                    <p className="text-xs font-bold text-blue-600 mb-1">Active Customers</p>
+                    <p className="text-xs font-bold text-blue-600 mb-1">{t('active_customers')}</p>
                     <p className="text-xl font-black text-blue-800">{clients.length}</p>
                   </div>
                   <Users size={28} className="text-blue-300" />
@@ -316,7 +366,7 @@ export default function App() {
             </div>
 
             <button onClick={() => setCurrentTab('lines')} className="w-full bg-slate-900 text-white p-4 rounded-xl font-bold flex justify-between items-center shadow-md active:scale-[0.98] transition-transform">
-              <div className="flex items-center gap-3"><MapPin size={20} className="text-emerald-400"/> Start Collection Route</div>
+              <div className="flex items-center gap-3"><MapPin size={20} className="text-emerald-400"/> {t('start_route')}</div>
               <ArrowRight size={18} className="text-slate-400" />
             </button>
           </div>
@@ -330,7 +380,7 @@ export default function App() {
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
                 <input 
                   type="text" 
-                  placeholder={`Search ${selectedDay} route...`} 
+                  placeholder={t('search')} 
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full pl-10 pr-4 py-3 bg-white border border-gray-200 rounded-xl text-sm font-medium focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 shadow-sm"
@@ -346,7 +396,7 @@ export default function App() {
                   <p className="text-xs text-gray-500 mt-1">Adjust search or add a new client.</p>
                 </div>
               ) : (
-                filteredClients.map(client => <MobileClientCard key={client._id} client={client} refresh={fetchClients} API_URL={API_URL} />)
+                filteredClients.map(client => <MobileClientCard key={client.id} client={client} />)
               )}
             </div>
 
@@ -362,13 +412,24 @@ export default function App() {
         {/* SETTINGS TAB */}
         {currentTab === 'settings' && (
           <div className="p-4 space-y-4 animate-in fade-in duration-300">
-            <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex flex-col items-center justify-center py-10">
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex flex-col items-center justify-center py-8">
               <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mb-4 text-slate-400">
                 <Users size={32} />
               </div>
-              <h2 className="text-xl font-bold text-slate-800">{user.phoneNumber || user.email}</h2>
+              <h2 className="text-xl font-bold text-slate-800">{user.email}</h2>
               <p className="text-sm text-gray-500 font-medium">Administrator</p>
               
+              {/* LANGUAGE SWITCHER */}
+              <div className="w-full mt-8 pt-6 border-t border-gray-100">
+                <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">App Language / மொழி</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <button onClick={() => i18n.changeLanguage('en')} className={`py-3 rounded-xl font-bold text-sm border transition-all ${i18n.language === 'en' ? 'bg-emerald-50 border-emerald-500 text-emerald-700' : 'bg-gray-50 border-gray-200 text-gray-500'}`}>English</button>
+                  <button onClick={() => i18n.changeLanguage('ta')} className={`py-3 rounded-xl font-bold text-sm border transition-all ${i18n.language === 'ta' ? 'bg-emerald-50 border-emerald-500 text-emerald-700' : 'bg-gray-50 border-gray-200 text-gray-500'}`}>தமிழ்</button>
+                  <button onClick={() => i18n.changeLanguage('ml')} className={`py-3 rounded-xl font-bold text-sm border transition-all ${i18n.language === 'ml' ? 'bg-emerald-50 border-emerald-500 text-emerald-700' : 'bg-gray-50 border-gray-200 text-gray-500'}`}>മലയാളം</button>
+                  <button onClick={() => i18n.changeLanguage('te')} className={`py-3 rounded-xl font-bold text-sm border transition-all ${i18n.language === 'te' ? 'bg-emerald-50 border-emerald-500 text-emerald-700' : 'bg-gray-50 border-gray-200 text-gray-500'}`}>తెలుగు</button>
+                </div>
+              </div>
+
               <button 
                 onClick={handleLogout} 
                 className="mt-8 w-full bg-red-50 text-red-600 font-bold py-3 rounded-xl border border-red-100 flex items-center justify-center gap-2 active:bg-red-100"
@@ -384,7 +445,7 @@ export default function App() {
       {showAddForm && (
         <div className="fixed inset-0 bg-white z-50 overflow-y-auto flex flex-col">
           <div className="bg-slate-900 text-white p-4 flex justify-between items-center shrink-0">
-            <h3 className="font-bold text-lg">Add New Customer</h3>
+            <h3 className="font-bold text-lg">{t('add_customer')}</h3>
             <button onClick={() => setShowAddForm(false)} className="p-2 bg-slate-800 rounded-full active:bg-slate-700"><X size={20}/></button>
           </div>
           <form onSubmit={handleAddClient} className="p-5 space-y-4 flex-1">
@@ -433,15 +494,16 @@ export default function App() {
         </button>
         <button onClick={() => setCurrentTab('settings')} className={`flex flex-col items-center justify-center w-20 h-full gap-1 transition-colors ${currentTab === 'settings' ? 'text-emerald-600' : 'text-gray-400'}`}>
           <Users size={22} className={currentTab === 'settings' ? 'stroke-[2.5px]' : ''} />
-          <span className="text-[10px] font-bold">Profile</span>
+          <span className="text-[10px] font-bold">{t('profile')}</span>
         </button>
       </nav>
     </div>
   );
 }
 
-// --- MOBILE OPTIMIZED CLIENT CARD ---
-function MobileClientCard({ client, refresh, API_URL }) {
+// --- MOBILE OPTIMIZED CLIENT CARD (OFFLINE ENABLED + i18n) ---
+function MobileClientCard({ client }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [payAmount, setPayAmount] = useState('');
   const [isEditing, setIsEditing] = useState(false);
@@ -455,29 +517,24 @@ function MobileClientCard({ client, refresh, API_URL }) {
   const handlePayment = async () => {
     if (!payAmount || isNaN(payAmount)) return;
     const amount = Number(payAmount);
-    await fetch(`${API_URL}/clients/${client._id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        totalPaid: (client.totalPaid || 0) + amount, 
-        paymentHistory: [...(client.paymentHistory || []), { date: new Date().toLocaleDateString('en-IN'), amount: amount }] 
-      })
+    
+    await db.clients.update(client.id, {
+      totalPaid: (client.totalPaid || 0) + amount,
+      paymentHistory: [...(client.paymentHistory || []), { date: new Date().toLocaleDateString('en-IN'), amount: amount }],
+      isPendingSync: 1
     });
     setPayAmount('');
-    refresh();
   };
 
   const handleDelete = async () => {
     if(window.confirm(`Delete customer ${client.name}? This cannot be undone.`)) {
-      await fetch(`${API_URL}/clients/${client._id}`, { method: 'DELETE' });
-      refresh();
+      await db.clients.delete(client.id);
     }
   };
 
   const handleUpdate = async () => {
-    await fetch(`${API_URL}/clients/${client._id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editData) });
+    await db.clients.update(client.id, { ...editData, isPendingSync: 1 });
     setIsEditing(false);
-    refresh();
   };
 
   if (isEditing) {
@@ -493,15 +550,16 @@ function MobileClientCard({ client, refresh, API_URL }) {
             <input type="number" value={editData.principal} onChange={e=>setEditData({...editData, principal: e.target.value})} className="w-full border p-2.5 rounded-lg bg-gray-50 text-sm" placeholder="Principal" />
             <input type="number" value={editData.interest} onChange={e=>setEditData({...editData, interest: e.target.value})} className="w-full border p-2.5 rounded-lg bg-gray-50 text-sm" placeholder="Interest %" />
           </div>
-          <button onClick={handleUpdate} className="w-full py-3 bg-slate-900 text-white font-bold rounded-xl mt-2">Save Changes</button>
+          <button onClick={handleUpdate} className="w-full py-3 bg-slate-900 text-white font-bold rounded-xl mt-2">Save Offline</button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className={`bg-white rounded-2xl shadow-sm border overflow-hidden transition-all ${isPaid ? 'border-emerald-200' : 'border-gray-200'}`}>
-      {isPaid && <div className="bg-emerald-500 text-white text-[10px] font-bold text-center py-0.5 tracking-widest uppercase">Fully Paid</div>}
+    <div className={`bg-white rounded-2xl shadow-sm border overflow-hidden transition-all ${isPaid ? 'border-emerald-200' : 'border-gray-200'} ${client.isPendingSync ? 'border-orange-300' : ''}`}>
+      {isPaid && <div className="bg-emerald-500 text-white text-[10px] font-bold text-center py-0.5 tracking-widest uppercase">{t('fully_paid')}</div>}
+      {client.isPendingSync === 1 && !isPaid && <div className="bg-orange-400 text-white text-[10px] font-bold text-center py-0.5 tracking-widest uppercase">Saved Offline - Sync Pending</div>}
       
       <div className="p-4" onClick={() => setExpanded(!expanded)}>
         <div className="flex justify-between items-start mb-3">
